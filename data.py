@@ -1,6 +1,7 @@
 ##套件#######
 import pandas as pd
 import numpy as np
+import chardet
 ### import data ####
 def read_csv_auto_encoding(path):
     with open(path, 'rb') as f:
