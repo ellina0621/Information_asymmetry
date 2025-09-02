@@ -212,6 +212,7 @@ trade = trade.groupby('date', group_keys=False).apply(lambda g: assign_bucket_wi
 print(trade[['date','time','Size','bucket','cum']].head(30))
 
 ##################計算vpin###################
+r = 30# 滾動視窗大小
 trade['buy_vol']  = np.where(trade['side'] == 'BUY',  trade['Size'], 0.0)
 trade['sell_vol'] = np.where(trade['side'] == 'SELL', trade['Size'], 0.0)
 
@@ -224,12 +225,11 @@ bucket_stats = (
          )
 )
 
-bucket_stats['sell_roll'] = bucket_stats.groupby('date')['sell_vol'].transform(lambda s: s.rolling(window=n, min_periods=n).sum())
-bucket_stats['buy_roll']  = bucket_stats.groupby('date')['buy_vol'].transform(lambda s: s.rolling(window=n, min_periods=n).sum())
-
+bucket_stats['sell_roll'] = bucket_stats.groupby('date')['sell_vol'].transform(lambda s: s.rolling(window=r, min_periods=r).sum())
+bucket_stats['buy_roll']  = bucket_stats.groupby('date')['buy_vol'].transform(lambda s: s.rolling(window=r, min_periods=r).sum())
 #bucket_stats['OI_roll'] = (bucket_stats['sell_roll'] - bucket_stats['buy_roll']).abs()
 bucket_stats['OI_roll'] = (bucket_stats['sell_roll'] - bucket_stats['buy_roll'])
-bucket_stats['VPIN_alt'] = bucket_stats['OI_roll'] / (n * bucket_capacity)
+bucket_stats['VPIN_alt'] = bucket_stats['OI_roll'] / (r * bucket_capacity)
 
 bucket_stats.to_excel('D:/台新/pin/vpin_result.xlsx', index=False)
 
@@ -253,7 +253,7 @@ plt.show()
 ####觀察是否有相關###
 # 先過濾 8/13 的資料
 focus = bucket_stats[bucket_stats['VPIN_alt'].notna()].copy()
-focus['target_time'] = focus['bucket_done_at'] + pd.Timedelta(minutes=5)
+focus['target_time'] = focus['bucket_done_at'] + pd.Timedelta(minutes=1)
 focus = focus[focus['target_time'].notna()].copy()
 print(focus.head())
 results = []
@@ -294,7 +294,67 @@ model = sm.OLS(y, X).fit()
 
 print(model.summary()) 
 
+###桶數跟rolling窗口一致，減少雜訊###
 ##把abs.刪掉的vpin與報酬呈現負相關，若賣方驅動越大，賣壓出來，報酬會下降，完全合邏輯笑死，但不顯著^^
 ##用正常的vpin(絕對值)與一分鐘後的報酬成正相關，合邏輯，畢竟資訊不對稱出來，會要求較高的報酬率，但不顯著。
-##但我想要知道這個vpin出來後，是否是
+
+
+######交易策略回策######
+
+#更改rolling窗口，但可能會有雜訊在內，算出來的vpin容易受到單一桶累積快速這種波動所影響
+#把abs刪掉進行交易回策，與論文方法不太一樣，想試看看有方向性之情況下，是否作為訊號
+
+#未來想納入隔夜報酬作為交易權重的參數，但現在還沒跑統計檢定:)
+
+##交易商品##
+#1.交易標的：台指期近(FITX*1)
+#2.樣本期間 :2025/08/01～2025/08/21(tick data)
+#3.樣本內：2025/08/01～2025/08/08
+#4.樣本外：2025/08/11～2025/08/20(rolling的方式)
+#5.交易成本：fee+tax = $131(單邊)
+#6.本金：$1,000,000 TWD
+#7.滑價成本：____%(大概抓)
+
+
+##策略建購與發想##
+#VPIN作為造市商避險拉開spread的風險管理工具，在文章中，是採rolling的方式計算vpin
+# 且分子類似order imbalance，只是加上絕對值，沒有方向性。(避險工具)他是預測毒性委託帶來的波動性，無法預測方向
+#而本研究想去想驗證看看資訊交易不對稱的訊號出現後，是否能根據買方驅動 or 賣方驅動，將價格往上掛或往下掛，確保能賺取一定的spread
+
+#前面回歸顯示，rolling與bucket的數值不一致且去除ABS後，VPIN與1 min後的報酬呈負相關
+#因此我們假設，若vpin(累積完一桶)後，買方驅動，理應價格會往上，但因為資訊不對稱，造市商會將價格往下掛，未來價格下跌
+#若vpin> 0，ask掛在目前成交價的+2 tick(這tick看能不能用機器學習參數跑出來)，bid則掛____(往下掛，但也想看樣本內大概一分鐘後平均會往下幾個tick)
+#若vpin < 0 ，bid則掛在成交價-2，ask則掛_____
+
+######策略實作#######
+####資料修正####
+#為了符合實務交易，論文中是以樣本期間計算日平均交易量，這裡採用樣本內日平均成交量，並以樣本內數據計算隔一日累積成一個bucket的量
+daily_volume_new = daily_volume.copy()
+daily_volume = daily_volume.drop(columns=['avg_volume'])
+daily_volume['adv_roll'] = (
+    daily_volume_new['total_volume']
+    .expanding()
+    .mean()
+    .shift(1)
+)
+
+print(daily_volume.head())
+print(daily_volume['date'].unique())
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+##統計檢定
+#相關性在前面跑過，但目前秉持著理論與實務仍有些差異，理論不顯著不代表真的不會賺錢，理論顯著也不代表會賺錢
+
 
